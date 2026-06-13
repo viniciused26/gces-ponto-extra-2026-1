@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.env
+.DS_Store
+.pytest_cache/
+*.egg-info/
+
+data/pdfs/*
+!data/pdfs/.gitkeep
+data/*.db
+data/conjuntura.db

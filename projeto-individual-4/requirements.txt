@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+pydantic
+pydantic-settings
+google-genai
+pymupdf
+httpx
+beautifulsoup4
+lxml
+apscheduler
+sqlalchemy
+python-dotenv
+pytest
+pytest-asyncio
