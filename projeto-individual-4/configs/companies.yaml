@@ -1,0 +1,7 @@
+companies:
+  - name: MRV
+    results_url: https://ri.mrv.com.br/informacoes-financeiras/central-de-resultados/
+  - name: Direcional
+    results_url: https://ri.direcional.com.br/informacoes-financeiras/central-de-resultados/
+  - name: Tenda
+    results_url: https://ri.tenda.com/informacoes-financeiras/central-de-resultados/

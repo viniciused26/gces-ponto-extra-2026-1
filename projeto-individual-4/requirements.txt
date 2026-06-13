@@ -10,5 +10,6 @@ lxml
 apscheduler
 sqlalchemy
 python-dotenv
+pyyaml
 pytest
 pytest-asyncio
