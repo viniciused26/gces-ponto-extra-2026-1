@@ -1,0 +1,32 @@
+{
+  "id": 1,
+  "empresa": "MRV",
+  "ano": 2025,
+  "trimestre": 3,
+  "lanc_vs_tri_anterior": -32.0,
+  "lanc_vs_mesmo_tri_ano_ant": -19.0,
+  "lanc_acum_9m_ano_ant": 96.0,
+  "lanc_acum_9m_atual": 20.0,
+  "vend_vs_tri_anterior": -12.0,
+  "vend_vs_mesmo_tri_ano_ant": -10.0,
+  "vend_acum_9m_ano_ant": 9.0,
+  "vend_acum_9m_atual": -5.0,
+  "vendas_unidades": null,
+  "vgv_milhoes": null,
+  "lancamentos_unidades": null,
+  "estoque_unidades": null,
+  "obras_andamento": null,
+  "unidades_entregues": null,
+  "receita_liquida_milhoes": null,
+  "lucro_liquido_milhoes": null,
+  "url_origem": "local://fixtures/Boletim_Conjuntura_2025_3T.pdf",
+  "hash_documento": "e53f30f5f67ebc739041680133ef33bedc87446cba7bb41ee9fbb0c4f3e65661",
+  "data_processamento": "2026-06-13T06:40:25.527276",
+  "lineage": [
+    {
+      "pdf_url": "local://fixtures/Boletim_Conjuntura_2025_3T.pdf",
+      "pagina_origem": 1,
+      "chunk_id": "full-scan"
+    }
+  ]
+}

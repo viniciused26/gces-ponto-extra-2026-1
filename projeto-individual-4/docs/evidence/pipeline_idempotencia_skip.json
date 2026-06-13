@@ -1,0 +1,8 @@
+{
+  "status": "skipped",
+  "empresa": "MRV",
+  "source_url": "local://fixtures/Boletim_Conjuntura_2025_3T.pdf",
+  "hash_sha256": "e53f30f5f67ebc739041680133ef33bedc87446cba7bb41ee9fbb0c4f3e65661",
+  "snapshot_id": null,
+  "message": "Hash já existente no catálogo — LLM não acionado."
+}

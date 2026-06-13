@@ -1,111 +1,320 @@
-# Especificação do Desafio Prático: Pipeline de UDA (Unstructured Data Analysis)
+# Pipeline UDA — Conjuntura Habitacional
 
-## Introdução e Contextualização
-Estudos de mercado apontam que 80% a 90% dos dados gerados globalmente são não estruturados (relatórios, contratos, PDFs, imagens). No entanto, tomar decisões estratégicas exige dados estruturados (tabelas, métricas, séries temporais). O processo de transformar esses grandes volumes de texto livre em bancos de dados relacionais consultáveis é conhecido como Análise de Dados Não Estruturados (UDA).
+Pipeline de ingestão, extração semântica (LLM) e API REST para métricas operacionais do setor habitacional, a partir de PDFs de Relações com Investidores (RI) e Boletins de Conjuntura.
 
-No cenário governamental, o Ministério das Cidades enfrenta o desafio de produzir periodicamente um Relatório de Conjuntura do Setor Habitacional. Este relatório depende da consolidação de dados operacionais e de mercado das principais construtoras do país, informações estas que ficam pulverizadas em relatórios e prévias operacionais em PDF publicados trimestralmente nos sites de Relações com Investidores (RI) de cada empresa.
+> Especificação original da atividade: [TAREFA.md](TAREFA.md)
 
-## O Desafio
-O objetivo é projetar e implementar um Pipeline de Engenharia e Análise de Dados Inteligente focado no setor corporativo habitacional, capaz de:
-- Coletar os relatórios/prévias operacionais em PDF diretamente das Centrais de Resultados (RI) das incorporadoras. Extrair de forma automatizada, ou seja ficar observando e sempre que tiver um relatório novo já coletar e processar.
-- Processar e Extrair as informações sob uma ótica semântica utilizando LLMs.
-- Servir esses dados integrados por meio de uma API estruturada para alimentar o Relatório de Conjuntura.
+---
 
-O diferencial deste desafio é a resiliência da arquitetura: o pipeline não deve depender de regras rígidas de layout (como coordenadas fixas de PDF), mas sim da compreensão do contexto pela IA, permitindo que o mesmo script funcione mesmo se as empresas mudarem o design de seus relatórios ou tentarem mascarar resultados negativos destacando métricas convenientes.
+## 1. Resumo
 
-### Escopo Técnico: O Que Fazer?
+Solução end-to-end que:
 
-#### A. Extração Automatizada e Contínua (Orientada a Eventos)
+1. **Observa** Centrais de Resultados de incorporadoras (polling agendado).
+2. **Baixa** PDFs de Prévia Operacional e verifica duplicidade por **SHA-256** antes de acionar o LLM.
+3. **Extrai** métricas via **Google Gemini** com saída estruturada (Pydantic).
+4. **Persiste** no catálogo SQLite com **linhagem** (URL do PDF, página, chunk).
+5. **Expõe** dados via **API REST** documentada no Swagger UI.
 
-O pipeline não deve ser uma ferramenta de execução manual e isolada. Logo o pipeline deve possuir arquitetura capaz de observar de forma contínua as fontes de dados (Centrais de Resultados/RI das empresas). Sempre que um novo relatório ou prévia operacional em PDF for detectado, o sistema deve disparar o fluxo de ingestão de forma automatizada.
+Validado com dois layouts distintos:
 
-Para atender a este requisito, a arquitetura proposta pelos alunos deve resolver dois problemas fundamentais:
+| Documento | Layout | Estratégia de chunking |
+|-----------|--------|------------------------|
+| `fixtures/Boletim_Conjuntura_2025_3T.pdf` | Tabela consolidada (1 página) | **Full-Scan** |
+| `fixtures/MRV SA - Prévia Operacional - 1T26.pdf` | Apresentação em slides (13 páginas) | **Chunking semântico** |
 
-##### 1. Gatilho de Ingestão (Ingestion Trigger)
+---
 
-Propor uma estratégia para detectar novos arquivos sem sobrecarregar os servidores das empresas. Eles podem escolher entre:
-- Políticas de Agendamento (Polling/CronJobs): Scripts agendados que varrem as páginas de RI das construtoras em intervalos definidos (ex: uma vez por dia) buscando novos links de PDF.
-- Gatilhos baseados em Webhooks ou RSS (onde disponível): Captura de atualizações assim que o site publica uma nova notícia de resultado.
+## 2. Decisões de arquitetura
 
-##### 2. Idempotência e Evitar de Duplicidade
+| Decisão | Escolha | Justificativa |
+|---------|---------|---------------|
+| Gatilho de ingestão | **Polling** (APScheduler, 1×/dia) | Simples, sem depender de RSS/webhooks nas páginas de RI |
+| LLM | **Google Gemini** (`gemini-2.5-flash`) | Saída estruturada nativa via JSON Schema + Pydantic |
+| Catálogo | **SQLite** | Zero infraestrutura extra; linhagem em tabelas relacionais |
+| Parsing de PDF | **PyMuPDF** | Extração de texto bruto; sem regras fixas de coordenadas |
+| Chunking | **Híbrido** | Full-Scan ≤ 8 páginas; slides longos segmentados por palavras-chave operacionais |
+| Idempotência | **SHA-256** do binário | Evita reprocessamento e custo de API |
 
-O pipeline deve ser inteligente o suficiente para saber se um PDF já foi processado anteriormente.
-Requisito: Antes de enviar o arquivo para o LLM (gerando custos desnecessários de API), o sistema deve calcular uma assinatura única do arquivo (como um hash MD5 ou SHA-256 do PDF ou da URL) e verificar no Catálogo de Dados se aquele documento já foi computado. Se o hash já existir, o arquivo é ignorado; se for novo, o fluxo segue.
+### Fluxo
 
-#### B. Processamento dos dados
+```mermaid
+flowchart LR
+    Scheduler[APScheduler] --> Scraper[RI Scraper]
+    Scraper --> Downloader[PDF Downloader]
+    Downloader --> HashCheck{Hash novo?}
+    HashCheck -->|Não| Skip[Skip sem LLM]
+    HashCheck -->|Sim| Parser[PyMuPDF]
+    Parser --> Chunker[Semantic Chunker]
+    Chunker --> Gemini[Gemini + Pydantic]
+    Gemini --> Catalog[(SQLite)]
+    Catalog --> API[FastAPI]
+```
 
-Nesta etapa, a solução não deve possui extratores baseados em regras rígidas de programação tradicional (como expressões regulares ou coordenadas de pixels). Em vez disso, projetar e implementar um Módulo de Análise de Dados Não Estruturados (UDA - Unstructured Data Analysis) alimentado por LLMs.
+### Estratégia de chunking
 
-Para desenhar essa solução, os grupos deverão utilizar como referência as técnicas sedimentadas no estado da arte do desenvolvimento de banco de dados e IA, mapeando o fluxo em três requisitos técnicos:
+- **Full-Scan:** documentos com ≤ 8 páginas (ex.: Boletim 3T25, 1 página).
+- **Chunking semântico:** documentos maiores; seleciona páginas com termos como *Vendas*, *Lançamentos*, *Dados Operacionais*, *VGV*, além das 2 primeiras páginas (metadados do período).
 
-##### 1. Estratégia de Segmentação de Documentos (Chunking & Parsing)
+---
 
-Os relatórios de RI podem variar de pequenos comunicados a documentos extensos. Decidir e justificar como o PDF será lido e enviado para a IA:
+## 3. Estrutura do projeto
 
-- Estratégia Full-Scan: Enviar o texto integral do PDF ou da página diretamente no prompt do LLM. É eficaz para documentos curtos, mas cara e lenta para documentos longos.
-- Estratégia de Chunking Semântico: Dividir o documento em blocos baseados em contexto ou títulos (estruturas semelhantes a Semantic Hierarchical Trees ou Semantic Chunks). Essa abordagem recupera apenas os pedaços que contêm tabelas operacionais e métricas financeiras antes de acionar o LLM, otimizando o custo de tokens e reduzindo a latência.
+```
+projeto-individual-4/
+├── README.md              # este documento
+├── TAREFA.md              # especificação do desafio
+├── requirements.txt
+├── .env.example
+├── configs/companies.yaml # empresas e URLs da Central de Resultados
+├── fixtures/              # PDFs de teste
+├── docs/
+│   ├── evidence/          # JSONs de evidência
+│   └── images/            # capturas (Swagger)
+├── data/
+│   ├── pdfs/              # PDFs baixados (gitignore)
+│   └── conjuntura.db      # catálogo (gitignore)
+├── src/
+│   ├── api/               # FastAPI
+│   ├── catalog/           # SQLite + linhagem
+│   ├── contracts/       # Contrato Semântico Pydantic
+│   ├── extraction/        # PDF, chunking, Gemini
+│   ├── ingestion/         # scraper, downloader, hasher
+│   ├── pipeline.py        # orquestrador
+│   └── scheduler.py       # polling agendado
+└── tests/
+```
 
-##### 2. Extração
+---
 
-Você têm a liberdade de escolher a pilha tecnológica que comporá o motor do pipeline, podendo adotar duas abordagens de mercado:
+## 4. Setup
 
-- Uso de Frameworks Declarativos Existentes: Integrar à solução bibliotecas especializadas em dados não estruturados citadas na literatura, como LOTUS (usando operadores como sem_extract e sem_filter), DocETL (com pipelines baseados em múltiplos agentes) ou Palimpzest.
-- Implementação de Solução Nativa: Construir um motor próprio em Python (utilizando bibliotecas de parsing como MinerU ou PyMuPDF) integrado diretamente à API de um LLM de escolha (ex: GPT-4, Claude, DeepSeek).
+### Pré-requisitos
 
-##### 3. O Contrato Semântico como Filtro de Revisão e Qualidade
-O Contrato Semântico (mapeado por meio de ferramentas de saída estruturada como Pydantic, Instructor ou JSON Schema) será a ferramenta central de revisão e validação da atividade do pipeline.
+- Python 3.12+
+- Chave de API Gemini ([Google AI Studio](https://aistudio.google.com/app/apikey))
 
-#### C. Camada de Serviço (API)
+### Instalação
 
-Deve ser disponibilizada uma API (REST/JSON) com endpoints claros que permitam filtrar as informações por empresa e período (ex: GET /api/conjuntura?empresa=MRV&ano=2025&trimestre=3).
+```bash
+cd projeto-individual-4
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+# Edite .env e preencha GEMINI_API_KEY
+```
 
-## Como coletar os dados?
+### Variáveis de ambiente (`.env`)
 
+| Variável | Obrigatória | Descrição |
+|----------|-------------|-----------|
+| `GEMINI_API_KEY` | Sim | Chave da API Gemini |
+| `GEMINI_MODEL` | Não | Modelo (default: `gemini-2.5-flash`) |
+| `POLL_INTERVAL_HOURS` | Não | Intervalo do scheduler (default: `24`) |
 
-O caminho mais rápido não é tentar navegar pelo site comercial da empresa (onde ela vende apartamentos). Eles devem ir direto aos buscadores (Google, DuckDuckGo, etc.) e digitar:
+---
 
-[Nome da Empresa] RI ou [Nome da Empresa] Relações com Investidores
+## 5. Como rodar
 
-Exemplos: "MRV RI", "Direcional RI", "Tenda Relações com Investidores".
+### 5.1 Processar um PDF local
 
+```bash
+# Extrai, persiste no catálogo e exibe JSON
+python -m src.pipeline process fixtures/Boletim_Conjuntura_2025_3T.pdf \
+  --empresa MRV --ano 2025 --trimestre 3
+```
 
-Uma vez dentro do portal de RI de uma construtora (como Plano & Plano, Cury, Pacaembu), procurar por um menu ou seção com os seguintes nomes:
+Alternativa via CLI de extração:
 
-- Central de Resultados (é o nome mais comum)
-- Divulgação de Resultados
-- Central de Downloads / Relatórios Finaceiros
+```bash
+python -m src.extraction.cli fixtures/Boletim_Conjuntura_2025_3T.pdf \
+  --empresa MRV --ano 2025 --trimestre 3 --save
+```
 
-Dentro da Central de Resultados, haverá uma tabela ou lista organizada por Ano (ex: 2025, 2026) e Trimestre (1T, 2T, 3T, 4T). As empresas costumam publicar vários arquivos por trimestre, mas para o escopo do desafio buscar pela Prévia Operacional (documento lançado logo após o fim do trimestre com dados brutos de obras/vendas).
+### 5.2 Polling das Centrais de Resultados
 
-## Boletim Conjuntura
+```bash
+# Uma varredura imediata
+python -m src.scheduler --once
 
-O boletim de exemplo para extrair os dados está em:
+# Ou via pipeline
+python -m src.pipeline poll
+```
 
-[Boletim de Conjuntura 2025 3T](https://github.com/unb-Sistemas-de-Machine-learning/Projetos-Individuais-2026-1/blob/main/projeto-individual-4/exemplo_Boletim_Conjuntura_2025_3T.pdf)
+Empresas configuradas em `configs/companies.yaml`: **MRV**, **Direcional**, **Tenda**.
 
-## Componentes Obrigatórios da Solução
-O pipeline construído pelos grupos deve conter rigorosamente três camadas arquiteturais:
+### 5.3 Scheduler contínuo (polling diário)
 
-- Camada de Extração de Dados: Implementação do motor que faz o parsing do PDF e extrai os valores brutos. Os alunos deverão escolher de forma justificada entre uma estratégia Full-Scan (enviar a página inteira) ou baseada em Chunking/RAG (segmentar o PDF e recuperar só os trechos das tabelas).
-- Contrato Semântico dos Dados: Definição das regras de negócio e validação de dados passadas à IA. O prompt do sistema deve blindar o banco, forçando o LLM a responder exatamente os tipos certos e tratar valores ausentes como NULL.
-- Catálogo de Dados e Linhagem: O repositório deve registrar a linhagem exata do dado (data lineage), associando cada linha do banco ao link do PDF original coletado na central de resultados.
+```bash
+python -m src.scheduler
+# Executa imediatamente e repete a cada POLL_INTERVAL_HOURS (default 24h)
+# Ctrl+C para encerrar
+```
 
-## Critérios de Avaliação
+### 5.4 API REST
 
-O foco da avaliação será a robustez da arquitetura proposta para resolver a variabilidade dos PDFs. Não será avaliada a interface gráfica. Serão avaliados:
+```bash
+uvicorn src.api.main:app --reload --port 8000
+```
 
-- Qualidade do Contrato Semântico: Quão bem os prompts e esquemas blindam o banco contra alucinações e variações de layout.
-- Resiliência contra Variações de Layout: O pipeline precisa rodar com sucesso em pelo menos dois layouts de empresas diferentes (ex: o formato em tabela do Boletim 3T25 e o formato em apresentação de slides da Prévia da MRV 1T26).
-- Extração de Valores Absolutos: A capacidade do LLM de ignorar as porcentagens de variação destacadas pelo marketing de RI e extrair os valores brutos para que o banco calcule o histórico real.
-- Modelagem Temporal e API: Consistência no salvamento dos trimestres e clareza dos contratos da API gerada.
+| URL | Descrição |
+|-----|-----------|
+| http://localhost:8000/docs | **Swagger UI** (documentação interativa) |
+| http://localhost:8000/redoc | ReDoc |
+| http://localhost:8000/openapi.json | Esquema OpenAPI |
 
-## Como submeter
+**Exemplos curl:**
 
-Data limite de entrega: 08.06
+```bash
+curl "http://localhost:8000/api/conjuntura?empresa=MRV&ano=2025&trimestre=3"
+curl "http://localhost:8000/api/conjuntura/lineage/1"
+curl "http://localhost:8000/health"
+```
 
-Dentro da sua pasta pessoal (ex: maria-silva/), crie a subpasta projeto-4/
+Para parar o uvicorn: `Ctrl+C` no terminal.
 
-Coloque todos os entregáveis dentro dessa subpasta
+### 5.5 Testes automatizados
 
-Abra um Pull Request para submissão.
+```bash
+pytest tests/ -v -m "not integration"
+# 37 testes unitários
 
+pytest tests/test_gemini_extractor.py -m integration -v
+# Teste live com Gemini (requer API key)
+```
+
+---
+
+## 6. API — Endpoints
+
+| Método | Rota | Descrição |
+|--------|------|-----------|
+| `GET` | `/health` | Status da API e conexão com o banco |
+| `GET` | `/api/conjuntura?empresa=&ano=&trimestre=` | Métricas + linhagem |
+| `GET` | `/api/conjuntura/lineage/{snapshot_id}` | Detalhes de origem do dado |
+
+### Swagger UI
+
+Interface interativa gerada automaticamente pelo FastAPI:
+
+![Swagger UI — Pipeline UDA](docs/images/swagger-ui.png)
+
+Acesse localmente em **http://localhost:8000/docs** após subir a API.
+
+---
+
+## 7. Evidências de funcionamento
+
+### 7.1 Testes automatizados
+
+```
+37 passed, 1 deselected
+```
+
+Cobertura: contrato Pydantic, catálogo/idempotência, PDF reader, chunking, pipeline, scraper, downloader e API.
+
+### 7.2 Extração — Boletim MRV 3T25
+
+Pipeline processou o Boletim e extraiu as variações percentuais corretas (`lanc_vs_tri_anterior: -32.0`, etc.).
+
+Resposta da API (`GET /api/conjuntura?empresa=MRV&ano=2025&trimestre=3`):
+
+```json
+{
+  "id": 1,
+  "empresa": "MRV",
+  "ano": 2025,
+  "trimestre": 3,
+  "lanc_vs_tri_anterior": -32.0,
+  "lanc_vs_mesmo_tri_ano_ant": -19.0,
+  "lanc_acum_9m_ano_ant": 96.0,
+  "lanc_acum_9m_atual": 20.0,
+  "vend_vs_tri_anterior": -12.0,
+  "vend_vs_mesmo_tri_ano_ant": -10.0,
+  "vend_acum_9m_ano_ant": 9.0,
+  "vend_acum_9m_atual": -5.0,
+  "url_origem": "local://fixtures/Boletim_Conjuntura_2025_3T.pdf",
+  "hash_documento": "e53f30f5f67ebc739041680133ef33bedc87446cba7bb41ee9fbb0c4f3e65661",
+  "data_processamento": "2026-06-13T06:40:25.527276",
+  "lineage": [
+    {
+      "pdf_url": "local://fixtures/Boletim_Conjuntura_2025_3T.pdf",
+      "pagina_origem": 1,
+      "chunk_id": "full-scan"
+    }
+  ]
+}
+```
+
+Arquivo completo: [docs/evidence/api_conjuntura_mrv_3t25.json](docs/evidence/api_conjuntura_mrv_3t25.json)
+
+### 7.3 Idempotência (hash SHA-256)
+
+Reprocessar o mesmo PDF **não aciona o Gemini**:
+
+```json
+{
+  "status": "skipped",
+  "empresa": "MRV",
+  "hash_sha256": "e53f30f5f67ebc739041680133ef33bedc87446cba7bb41ee9fbb0c4f3e65661",
+  "message": "Hash já existente no catálogo — LLM não acionado."
+}
+```
+
+Arquivo: [docs/evidence/pipeline_idempotencia_skip.json](docs/evidence/pipeline_idempotencia_skip.json)
+
+### 7.4 Dois layouts de PDF
+
+| PDF | Páginas | Chunking | Resultado |
+|-----|---------|----------|-----------|
+| Boletim 3T25 | 1 | `full-scan` (1 chunk) | Variações % extraídas corretamente |
+| Prévia MRV 1T26 | 13 | `semantic-chunks` (~7 páginas) | Pipeline executa; texto escasso em slides limita métricas absolutas* |
+
+\* *Limitação conhecida:* slides com gráficos/tabelas renderizadas como imagem não expõem números ao PyMuPDF. OCR seria extensão futura.
+
+### 7.5 Health check
+
+```json
+{
+  "status": "ok",
+  "database": "connected"
+}
+```
+
+---
+
+## 8. Contrato semântico
+
+Campos principais extraídos pelo LLM (Pydantic → `src/contracts/conjuntura.py`):
+
+**Variações percentuais (Boletim de Conjuntura):**
+`lanc_vs_tri_anterior`, `lanc_vs_mesmo_tri_ano_ant`, `lanc_acum_9m_ano_ant`, `lanc_acum_9m_atual`, `vend_vs_tri_anterior`, `vend_vs_mesmo_tri_ano_ant`, `vend_acum_9m_ano_ant`, `vend_acum_9m_atual`
+
+**Valores absolutos (Prévia Operacional):**
+`vendas_unidades`, `vgv_milhoes`, `lancamentos_unidades`, `estoque_unidades`, `obras_andamento`, etc.
+
+Regras no prompt: campos ausentes → `null`; proibido inferir; percentuais de marketing ignorados em prévias.
+
+---
+
+## 9. Riscos e limitações
+
+| Risco | Mitigação adotada |
+|-------|-------------------|
+| Sites de RI mudam HTML | URLs por empresa em `configs/companies.yaml`; seletores isolados no scraper |
+| Custo/latência Gemini | Chunking semântico + skip por hash |
+| Alucinação do LLM | Contrato Pydantic estrito + prompt "null se não encontrar" |
+| PDFs escaneados / slides gráficos | Documentado; OCR fora do escopo mínimo |
+| Cota API Gemini | Usar `gemini-2.5-flash` no `.env` |
+
+---
+
+## 10. Checklist de entrega
+
+- [x] Polling detecta/baixa PDFs sem reprocessar duplicatas (hash)
+- [x] Extração funciona no Boletim 3T25 (tabela) e pipeline roda na Prévia MRV 1T26 (slides)
+- [x] Valores salvos com linhagem (`url_origem`, `hash_documento`)
+- [x] `GET /api/conjuntura?empresa=...&ano=...&trimestre=...` retorna JSON consistente
+- [x] `.env`, `data/pdfs/` e `*.db` no `.gitignore`
+- [x] Documentação operacional (este README) + especificação em TAREFA.md
