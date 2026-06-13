@@ -119,7 +119,10 @@ class CatalogRepository:
         with self._session() as session:
             stmt = (
                 select(MetricSnapshot)
-                .options(joinedload(MetricSnapshot.lineage_entries))
+                .options(
+                    joinedload(MetricSnapshot.lineage_entries),
+                    joinedload(MetricSnapshot.document),
+                )
                 .where(
                     MetricSnapshot.empresa == empresa,
                     MetricSnapshot.ano == ano,
@@ -129,6 +132,23 @@ class CatalogRepository:
                 .limit(1)
             )
             return session.scalar(stmt)
+
+    def get_snapshot_by_id(self, snapshot_id: int) -> Optional[MetricSnapshot]:
+        with self._session() as session:
+            stmt = (
+                select(MetricSnapshot)
+                .options(
+                    joinedload(MetricSnapshot.lineage_entries),
+                    joinedload(MetricSnapshot.document),
+                )
+                .where(MetricSnapshot.id == snapshot_id)
+                .limit(1)
+            )
+            return session.scalar(stmt)
+
+    def check_connection(self) -> bool:
+        with self._session() as session:
+            return session.execute(select(1)).scalar_one() == 1
 
     def _session(self) -> Session:
         return self._session_factory()
